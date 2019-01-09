@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
-
 import queue
+import select
+import threading
 
 
 class _PollableQueue(queue.Queue):
@@ -66,24 +67,99 @@ class _PollableQueue(queue.Queue):
         self._getsocket.close()
 
 
+class WechatpyDataPack:
+    def __init__(self):
+        self.agentid = None
+        self.friends = []
+        self.msg = []
 
 
-
-class wechatpyWrapper():
-    from wechatpy.session.memorystorage import MemoryStorage
-
-    def __init__(self, session_interface = MemoryStorage()):
-        self.session = session_interface
+class WechatpyWrapper(threading.Thread):
+    def __init__(self):
+        threading.Thread.__init__(self, name="Sending Thread")
+        from wechatpy.session.memorystorage import MemoryStorage
+        self.session = MemoryStorage()
         self.pollablequeue = _PollableQueue()
+        self.wechatclients = {}
 
-    def getWeChatClient(self,CorpId,secret):
+    def set_session(self, redis=None, shove=None, mc=None, prefix="wechatpy"):
+        if redis is not None:
+            from wechatpy.session.redisstorage import RedisStorage
+            self.session = RedisStorage(redis, prefix)
+        elif shove is not None:
+            from wechatpy.session.shovestorage import ShoveStorage
+            self.session = ShoveStorage(shove, prefix)
+        elif mc is not None:
+            from wechatpy.session.memcachedstorage import MemcachedStorage
+            self.session = MemcachedStorage(mc, prefix)
+
+    def set_wechatclient(self, agentid, CorpId, secret):
         from wechatpy.enterprise import WeChatClient
-        return WeChatClient(CorpId,secret,session=self.session)
+        self.wechatclients[agentid] = WeChatClient(CorpId, secret, session=self.session)
 
+    def getQueue(self):
+        return self.pollablequeue
 
+    def run(self):
+        self._listening_send()
+
+    def _listening_send(self):
+        flag = True
+        while flag:
+            try:
+                threads = []
+                can_read, _, _ = select.select([self.pollablequeue], [], [])
+                for r in can_read:
+                    wechatpyDataPack = r.get()
+                    if wechatpyDataPack == 'Fin':
+                        print("Received fin")
+                        break
+                    else:
+                        for friend in wechatpyDataPack.friends:
+                            thread = self._SendThreads(self.wechatclients[wechatpyDataPack.agentid],
+                                                       wechatpyDataPack.msg,
+                                                       friend,
+                                                       self.pollablequeue)
+                            thread.start()
+                            threads.append(thread)
+                flag = flag and self.pollablequeue.continuum()
+                for t in threads:
+                    t.join()
+                # print("All send finished")
+            except Exception as e:
+                pass
+
+    class _SendThreads(threading.Thread):
+        def __init__(self, client, msg_list, friend, pollablequeue):
+            threading.Thread.__init__(self, name="Send_2_{}".format(friend))
+            self.clients = client
+            self.msg_pack = msg_list
+            self.friend = friend
+            self.pollablequeue = pollablequeue
+
+        def run(self):
+            self._sending()
+
+        def _sending(self):
+            try:
+                time.sleep(msg_pack['retry'])
+                # print("Try send to {} now".format(friend))
+                r = client['client'].message.send_text(client['agentid'], friend, msg_pack['msg'])
+                # print("Send to {} Debug: {}".format(friend, r))
+            except InvalidCorpIdException as e:
+                logger.exception("CorpID Issue: {}".format(e))
+                raise
+            except Exception:
+                logger.error("Connection Issue, put message back, retry: {}".format(msg_pack['retry']))
+                msg_pack = {'client': msg_pack['client'], 'msg': msg_pack['msg'], 'friends': [friend],
+                            'retry': msg_pack['retry'] + 1}
+                # will retry send to everyone in this suite
+                retry_queue.put(msg_pack)  # put msg back into queue if connection issue, wait for next send
+                logger.exception("Sending Failed")
+                pass
 
 
 if __name__ == "__main__":
-    wechat_wrapper = wechatpyWrapper()
+    wechat_wrapper = WechatpyWrapper()
 
 
