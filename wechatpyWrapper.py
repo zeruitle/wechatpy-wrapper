@@ -8,7 +8,7 @@ class _PollableQueue(queue.Queue):
     # 定义一种新的Queue，底层有一对互联的socket
     # Create a pair of connected sockets
     def __init__(self, backlog=None):
-        import os,socket
+        import os, socket
 
         super().__init__()
         self.continue_flag = True
@@ -18,14 +18,14 @@ class _PollableQueue(queue.Queue):
             # non-POSIX 系统
             # non-POSIX system
             server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            #Open a localhost, port = 0 means avaliable random port number from 1024 to 65535
-            #建立一个localhost的服务，port=0 参数表示从1024到65535中随机选择一个可用端口使用
+            # Open a localhost, port = 0 means avaliable random port number from 1024 to 65535
+            # 建立一个localhost的服务，port=0 参数表示从1024到65535中随机选择一个可用端口使用
             server.bind(('127.0.0.1', 0))
             print('pollablequeue listening on port:', server.getsockname()[1])
-            #Since Python3.5 backlog changed to optional
-            #Python3.5后，listen的参数backlog变为可选
+            # Since Python3.5 backlog changed to optional
+            # Python3.5后，listen的参数backlog变为可选
             if backlog is None:
-                server.listen()
+                server.listen(1)
             else:
                 server.listen(backlog)
             # 创建一个服务器socket，之后立刻创建客户端socket并连接到服务器上
@@ -50,6 +50,11 @@ class _PollableQueue(queue.Queue):
 
     def empty(self):
         return super().empty()
+
+    def clear(self):
+        while not super().empty():
+            super().get(False)
+            super().task_done()
 
     def end(self, fin):
         # 使用自定义字符通知消费者终止，在close()前使用
@@ -100,9 +105,13 @@ class WechatpyWrapper(threading.Thread):
     def getQueue(self):
         return self.pollablequeue
 
+    # override run
+    #
     def run(self):
         self._listening_send()
 
+    # listening for new message in queue
+    # if incoming, pop new threads for sending
     def _listening_send(self):
         flag = True
         while flag:
@@ -113,8 +122,9 @@ class WechatpyWrapper(threading.Thread):
                     wechatpyDataPack = r.get()
                     if wechatpyDataPack == 'Fin':
                         print("Received fin")
-                        break
+                        return
                     else:
+                        # TODO:: can use coroutine here
                         for friend in wechatpyDataPack.friends:
                             thread = self._SendThreads(self.wechatclients[wechatpyDataPack.agentid],
                                                        wechatpyDataPack.msg,
@@ -161,5 +171,3 @@ class WechatpyWrapper(threading.Thread):
 
 if __name__ == "__main__":
     wechat_wrapper = WechatpyWrapper()
-
-
